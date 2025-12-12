@@ -119,6 +119,8 @@ def handle_message(event):
         ai_response = completion.choices[0].message.content
 
 
+        print(f"📩 受信: {user_message}")
+        print(f"🤖 返信: {ai_response}")
 
         # 4. AIの返事も履歴に追加
 
