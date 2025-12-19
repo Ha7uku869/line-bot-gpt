@@ -7,11 +7,9 @@ from sqlalchemy import create_engine, text
 # ==========================================
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Render対策: postgres:// を postgresql:// に変換
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# エンジンの作成（接続エラーを防ぐため、存在しない場合はNoneにする）
 if DATABASE_URL:
     engine = create_engine(DATABASE_URL)
 else:
@@ -23,14 +21,26 @@ def init_db():
     if not engine: return
     try:
         with engine.connect() as conn:
+            # 1. 会話履歴用のテーブル
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS conversations (
                     user_id TEXT PRIMARY KEY,
                     history TEXT
                 )
             """))
+            
+            # 2. 【New】抽出データ（ナレッジグラフの元）用のテーブル
+            # 論文にある time, where, who, emotion, stress を保存します
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS knowledge_store (
+                    id SERIAL PRIMARY KEY,
+                    user_id TEXT,
+                    extracted_data JSONB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
             conn.commit()
-            print("✅ データベース初期化完了")
+            print("✅ データベース初期化完了（ナレッジ用テーブル作成）")
     except Exception as e:
         print(f"❌ DB初期化エラー: {e}")
 
@@ -42,8 +52,7 @@ def get_history(user_id):
         if result:
             return json.loads(result[0])
         else:
-            # 初期プロンプト（AIの人格）
-            return [{"role": "system", "content": "あなたは親身な心理カウンセラーです。ユーザーの悩みを傾聴し、解決策を急がず、優しく共感してください。返信は短めに、友人のような距離感で。"}]
+            return [] # 初回は空リストを返す（システムプロンプトはai_handlerで付与するため）
 
 def save_history(user_id, history_list):
     """会話履歴をDBに保存(上書き)する"""
@@ -61,3 +70,22 @@ def save_history(user_id, history_list):
             conn.commit()
     except Exception as e:
         print(f"❌ DB保存エラー: {e}")
+
+def save_extracted_data(user_id, data_dict):
+    """
+    【New】抽出されたメンタルヘルスデータを保存する
+    """
+    if not engine: return
+    try:
+        data_json = json.dumps(data_dict, ensure_ascii=False)
+        with engine.connect() as conn:
+            # どんどん追記していく（上書きしない）
+            sql = text("""
+                INSERT INTO knowledge_store (user_id, extracted_data)
+                VALUES (:uid, :data)
+            """)
+            conn.execute(sql, {"uid": user_id, "data": data_json})
+            conn.commit()
+            print(f"💾 データ抽出保存完了: {data_dict}")
+    except Exception as e:
+        print(f"❌ データ保存エラー: {e}")

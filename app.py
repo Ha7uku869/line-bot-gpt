@@ -4,22 +4,18 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import os
 
-# 作成したモジュールをインポート
 import database
 import ai_handler
 
 app = Flask(__name__)
 
-# ==========================================
-# LINE Bot設定
-# ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.environ.get("CHANNEL_SECRET")
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 起動時にDBテーブルを作成
+# 起動時にDBテーブルを作成（抽出用テーブルも作られる）
 database.init_db()
 
 @app.route("/callback", methods=['POST'])
@@ -37,29 +33,31 @@ def handle_message(event):
     user_id = event.source.user_id 
     user_message = event.message.text 
 
-    # 1. データベースから履歴を取得 (database.pyにお任せ)
+    # 1. 履歴取得
     history = database.get_history(user_id)
 
-    # 2. ユーザーのメッセージを追加
+    # 2. ユーザーメッセージ追加
     history.append({"role": "user", "content": user_message})
+    if len(history) > 11: del history[1:3]
 
-    # メモリ節約（最大10ターン）
-    if len(history) > 11:
-        del history[1:3]
-
-    # 3. AIに返信を生成してもらう (ai_handler.pyにお任せ)
+    # 3. AI返信生成
     ai_response, tokens = ai_handler.get_chat_response(history)
-
-    # ログ出力
-    print(f"📩 受信: {user_message}")
-    print(f"🤖 返信: {ai_response}")
-    print(f"💰 User: {user_id[:5]}... | Total: {tokens}")
-
-    # 4. AIの返信を履歴に追加
     history.append({"role": "assistant", "content": ai_response})
 
-    # 5. データベースに保存 (database.pyにお任せ)
+    # 4. 履歴保存
     database.save_history(user_id, history)
+
+    # ==========================================
+    # 5. 【New】論文に基づくデータ抽出を実行！
+    # ==========================================
+    extracted_data = ai_handler.extract_mental_data(user_message, ai_response)
+    
+    if extracted_data:
+        # DBの新しいテーブルに保存
+        database.save_extracted_data(user_id, extracted_data)
+        
+        # ログで確認（RenderのLogs画面に出る）
+        print(f"📊 抽出データ: {extracted_data}")
 
     # LINEに返信
     line_bot_api.reply_message(
